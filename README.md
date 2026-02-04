@@ -1,1 +1,45 @@
-# smartnotes
+# SmartNotes
+
+SmartNotes is a notes app that auto-categorizes daily thoughts into useful lists (for example, grocery, tasks, reminders, ideas).
+
+## Stack
+
+- Next.js (App Router)
+- Netlify deployment
+- Neon Postgres
+- Optional AI categorization fallback (OpenAI-compatible APIs, including DeepSeek)
+
+## Setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Copy env template:
+
+```bash
+cp .env.example .env.local
+```
+
+3. Create tables in Neon by running `db/schema.sql`.
+
+4. Start locally:
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## Environment Variables
+
+- `DATABASE_URL`: Neon Postgres connection string
+- `OPENAI_API_KEY`: Optional, enables model fallback for low-confidence notes
+- `OPENAI_MODEL`: Optional, defaults to `gpt-4.1-mini`
+- `OPENAI_BASE_URL`: Optional, set for OpenAI-compatible providers (example: `https://api.deepseek.com`)
+
+## Netlify
+
+This repo includes `netlify.toml` with the official Next.js runtime plugin. Add the same environment variables in Netlify site settings before deployment.
