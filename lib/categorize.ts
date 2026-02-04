@@ -1,73 +1,88 @@
 import OpenAI from "openai";
 import { z } from "zod";
 
-import type { Category } from "@/lib/categories";
-import { CATEGORIES, isCategory } from "@/lib/categories";
+import { DEFAULT_CATEGORIES, type CategoryRecord } from "@/lib/categories";
 
 type CategorizationResult = {
-  category: Category;
+  text: string;
+  categorySlug: string;
   confidence: number;
   tags: string[];
   source: "rules" | "ai";
 };
 
-const KEYWORDS: Record<Category, string[]> = {
-  grocery: ["grocery", "milk", "eggs", "bread", "buy", "store", "supermarket"],
-  tasks: ["todo", "to-do", "finish", "complete", "send", "call", "submit"],
-  reminders: ["remember", "remind", "dont forget", "don't forget", "later", "tomorrow"],
-  ideas: ["idea", "brainstorm", "what if", "startup", "project idea"],
-  work: ["meeting", "client", "roadmap", "deadline", "sprint", "jira"],
-  health: ["doctor", "workout", "exercise", "sleep", "medicine", "vitamin"],
-  finance: ["budget", "invoice", "pay", "expense", "rent", "subscription"],
-  uncategorized: []
-};
-
 const aiSchema = z.object({
-  category: z.string(),
-  confidence: z.number().min(0).max(1),
-  tags: z.array(z.string()).max(5).default([])
+  entries: z
+    .array(
+      z.object({
+        text: z.string().min(1),
+        categorySlug: z.string(),
+        confidence: z.number().min(0).max(1),
+        tags: z.array(z.string()).max(5).default([])
+      })
+    )
+    .min(1)
+    .max(6)
 });
 
 function normalizeTags(text: string) {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((word) => word.length > 3)
-    .slice(0, 3);
+  return [...new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((word) => word.length > 3))].slice(
+    0,
+    5
+  );
 }
 
-function rulesCategory(text: string): CategorizationResult | null {
-  const normalized = text.toLowerCase();
+function splitText(text: string) {
+  const pieces = text
+    .split(/\n+|;/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return pieces.length > 0 ? pieces : [text.trim()];
+}
 
-  for (const category of CATEGORIES) {
-    const hits = KEYWORDS[category].filter((keyword) => normalized.includes(keyword));
-    if (hits.length > 0) {
-      return {
-        category,
-        confidence: 0.9,
-        tags: [...new Set([...hits.slice(0, 2), ...normalizeTags(text)])].slice(0, 5),
-        source: "rules"
-      };
+function getKeywords(category: CategoryRecord) {
+  const defaults = DEFAULT_CATEGORIES.find((item) => item.slug === category.slug)?.keywords ?? [];
+  const nameTokens = category.name.toLowerCase().split(/\s+/).filter((word) => word.length > 2);
+  const labelTokens = category.label.toLowerCase().split(/\s+/).filter((word) => word.length > 2);
+  return [...new Set([...defaults, ...nameTokens, ...labelTokens])];
+}
+
+function pickRuleCategory(text: string, categories: CategoryRecord[]) {
+  const normalized = text.toLowerCase();
+  let best: { slug: string; hits: number } | null = null;
+
+  for (const category of categories) {
+    const hits = getKeywords(category).filter((keyword) => normalized.includes(keyword)).length;
+    if (hits > 0 && (!best || hits > best.hits)) {
+      best = { slug: category.slug, hits };
     }
   }
 
-  return null;
+  return best?.slug ?? "uncategorized";
 }
 
-export async function categorizeNote(text: string): Promise<CategorizationResult> {
-  const ruleResult = rulesCategory(text);
-  if (ruleResult) {
-    return ruleResult;
-  }
+function normalizeCategorySlug(slug: string, categories: CategoryRecord[]) {
+  return categories.some((item) => item.slug === slug) ? slug : "uncategorized";
+}
+
+function ruleCategorize(text: string, categories: CategoryRecord[]): CategorizationResult[] {
+  return splitText(text).map((segment) => ({
+    text: segment,
+    categorySlug: pickRuleCategory(segment, categories),
+    confidence: 0.72,
+    tags: normalizeTags(segment),
+    source: "rules"
+  }));
+}
+
+export async function analyzeAndCategorize(text: string, categories: CategoryRecord[]): Promise<CategorizationResult[]> {
+  const normalizedText = text.trim();
+  if (!normalizedText) return [];
+
+  const safeCategories = categories.length > 0 ? categories : DEFAULT_CATEGORIES;
 
   if (!process.env.OPENAI_API_KEY) {
-    return {
-      category: "uncategorized",
-      confidence: 0.25,
-      tags: normalizeTags(text),
-      source: "rules"
-    };
+    return ruleCategorize(normalizedText, safeCategories);
   }
 
   try {
@@ -76,34 +91,34 @@ export async function categorizeNote(text: string): Promise<CategorizationResult
       baseURL: process.env.OPENAI_BASE_URL || undefined
     });
 
+    const categoriesPrompt = safeCategories.map((category) => `${category.slug}: ${category.name}`).join(", ");
+
     const completion = await client.chat.completions.create({
       model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content:
-            "You classify personal notes. Return JSON: {category, confidence, tags}. Categories: grocery,tasks,reminders,ideas,work,health,finance,uncategorized."
+          content: `You analyze personal notes. Split into multiple entries only when each part is a different intent.
+Return JSON as {"entries":[{"text":"...","categorySlug":"...","confidence":0-1,"tags":["..."]}]}
+Allowed categorySlug values: ${categoriesPrompt}.`
         },
-        { role: "user", content: text }
+        { role: "user", content: normalizedText }
       ]
     });
 
     const raw = completion.choices[0]?.message?.content ?? "{}";
     const parsed = aiSchema.parse(JSON.parse(raw));
 
-    return {
-      category: isCategory(parsed.category) ? parsed.category : "uncategorized",
-      confidence: parsed.confidence,
-      tags: parsed.tags.map((tag) => tag.toLowerCase()).slice(0, 5),
+    return parsed.entries.map((entry) => ({
+      text: entry.text.trim(),
+      categorySlug: normalizeCategorySlug(entry.categorySlug, safeCategories),
+      confidence: entry.confidence,
+      tags: entry.tags.map((tag) => tag.toLowerCase()).slice(0, 5),
       source: "ai"
-    };
+    }));
   } catch {
-    return {
-      category: "uncategorized",
-      confidence: 0.3,
-      tags: normalizeTags(text),
-      source: "rules"
-    };
+    return ruleCategorize(normalizedText, safeCategories);
   }
 }
+

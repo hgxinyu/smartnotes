@@ -1,140 +1,167 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
+import Image from "next/image";
 
-import { CATEGORIES, type Category } from "@/lib/categories";
-
-type Note = {
+type Todo = {
   id: string;
-  text: string;
-  category: Category;
-  confidence: number;
-  tags: string[];
-  source: "rules" | "ai";
-  created_at: string;
+  content: string;
+  is_done: boolean;
 };
 
 export default function HomePage() {
-  const [noteInput, setNoteInput] = useState("");
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [text, setText] = useState("");
+  const [imageData, setImageData] = useState<string | null>(null);
+  const [imageName, setImageName] = useState<string | null>(null);
+  const [todos, setTodos] = useState<Todo[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  async function loadNotes() {
-    const response = await fetch("/api/notes");
+  async function loadTodos() {
+    const response = await fetch("/api/todos");
     const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error ?? "Failed to load notes");
-    }
-    setNotes(data.notes);
+    if (!response.ok) throw new Error(data.error ?? "Failed to load todos");
+    setTodos(data.todos.slice(0, 8));
   }
 
   useEffect(() => {
-    loadNotes().catch((err: Error) => setError(err.message));
+    loadTodos().catch((err: Error) => setError(err.message));
   }, []);
 
-  async function handleCreate(event: FormEvent<HTMLFormElement>) {
+  async function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file.");
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > 2_200_000) {
+      setError("Image is too large. Please use a file under 2.2MB.");
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ""));
+        reader.onerror = () => reject(new Error("Failed to read image"));
+        reader.readAsDataURL(file);
+      });
+
+      if (dataUrl.length > 2_900_000) {
+        throw new Error("Image is too large after encoding. Try a smaller image.");
+      }
+
+      setImageData(dataUrl);
+      setImageName(file.name);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to read image");
+      setImageData(null);
+      setImageName(null);
+    }
+  }
+
+  function clearImage() {
+    setImageData(null);
+    setImageName(null);
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!noteInput.trim()) return;
+    if (!text.trim() && !imageData) return;
 
     setError(null);
-    setIsSubmitting(true);
-
+    setIsSaving(true);
     try {
       const response = await fetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: noteInput })
+        body: JSON.stringify({ text, imageData: imageData ?? undefined })
       });
       const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error ?? "Failed to create note");
-      }
+      if (!response.ok) throw new Error(data.error ?? "Failed to add note");
 
-      setNoteInput("");
-      setNotes((prev) => [data.note, ...prev]);
+      setText("");
+      clearImage();
+      setTodos((data.todos ?? []).slice(0, 8));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
-      setIsSubmitting(false);
+      setIsSaving(false);
     }
   }
-
-  async function updateCategory(id: string, category: Category) {
-    setError(null);
-
-    const response = await fetch(`/api/notes/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setError(data.error ?? "Failed to update category");
-      return;
-    }
-
-    setNotes((prev) => prev.map((note) => (note.id === id ? data.note : note)));
-  }
-
-  const grouped = useMemo(() => {
-    return notes.reduce<Record<string, Note[]>>((acc, note) => {
-      if (!acc[note.category]) acc[note.category] = [];
-      acc[note.category].push(note);
-      return acc;
-    }, {});
-  }, [notes]);
 
   return (
-    <main className="page">
-      <section className="hero">
-        <h1>SmartNotes</h1>
-        <p>Write once. Auto-sort into the right list.</p>
-      </section>
+    <main className="page homePage">
+      <section className="homeGrid">
+        <article className="homeCard homeComposer">
+          <div className="cardHeader">
+            <h2>Quick Capture</h2>
+            <span className="homeBadge">AI categorization</span>
+          </div>
+          <p>Drop a thought below and save. Your to-dos will be generated automatically.</p>
+          <form className="stack" onSubmit={handleSubmit}>
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              rows={6}
+              maxLength={4000}
+              placeholder="Example: Need eggs, schedule dentist, and email Alex the invoice."
+            />
+            <div className="homeUploadRow">
+              <label className="homeUploadBtn">
+                <input type="file" accept="image/*" onChange={handleImageChange} />
+                Choose image
+              </label>
+              {imageName && <span className="homeUploadName">{imageName}</span>}
+              {imageData && (
+                <button type="button" className="homeUploadClear" onClick={clearImage}>
+                  Remove image
+                </button>
+              )}
+            </div>
+            {imageData && (
+              <Image
+                src={imageData}
+                alt="Selected upload preview"
+                className="imagePreview"
+                width={1200}
+                height={800}
+                unoptimized
+              />
+            )}
+            <button disabled={isSaving}>{isSaving ? "Saving..." : "Save Note"}</button>
+          </form>
+        </article>
 
-      <form className="inputCard" onSubmit={handleCreate}>
-        <textarea
-          placeholder="Type a thought... ex: we are missing eggs at home"
-          value={noteInput}
-          onChange={(event) => setNoteInput(event.target.value)}
-          rows={4}
-          maxLength={1000}
-        />
-        <button disabled={isSubmitting}>{isSubmitting ? "Saving..." : "Add Note"}</button>
-      </form>
+        <aside className="homeCard homeAside">
+          <div className="cardHeader">
+            <h2>Latest AI To-Dos</h2>
+            <span className="homeCount">{todos.length}</span>
+          </div>
+          <div className="homeTodoList">
+            {todos.map((todo) => (
+              <div key={todo.id} className={`homeTodoItem ${todo.is_done ? "done" : ""}`}>
+                <input type="checkbox" checked={todo.is_done} readOnly />
+                <span>{todo.content}</span>
+              </div>
+            ))}
+            {todos.length === 0 && <p className="muted">No todo items yet.</p>}
+          </div>
+          <div className="homeLinks">
+            <Link href="/notes">See all notes</Link>
+            <Link href="/categories">Manage categories</Link>
+          </div>
+        </aside>
+      </section>
 
       {error && <p className="error">{error}</p>}
-
-      <section className="grid">
-        {CATEGORIES.map((category) => (
-          <article key={category} className="column">
-            <h2>{category}</h2>
-            <div className="stack">
-              {(grouped[category] ?? []).map((note) => (
-                <div key={note.id} className="noteCard">
-                  <p>{note.text}</p>
-                  <div className="meta">
-                    <span>
-                      {note.source} {Math.round(note.confidence * 100)}%
-                    </span>
-                    <select
-                      value={note.category}
-                      onChange={(event) => updateCategory(note.id, event.target.value as Category)}
-                    >
-                      {CATEGORIES.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </article>
-        ))}
-      </section>
     </main>
   );
 }
-
