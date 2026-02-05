@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { analyzeAndCategorize } from "@/lib/categorize";
 import { DEFAULT_CATEGORIES } from "@/lib/categories";
+import { requireCurrentUserId } from "@/lib/current-user";
 import { query } from "@/lib/db";
 import { extractTodoItems } from "@/lib/todos";
 
@@ -25,12 +26,17 @@ function sanitizeHtml(input: string) {
 
 export async function GET() {
   try {
+    const userId = await requireCurrentUserId();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const notes = await query(
       `SELECT n.id, n.text, n.text_html, n.image_data, n.category_slug, n.confidence, n.tags, n.source, n.created_at, c.name AS category_name, c.label AS category_label, c.color AS category_color
        FROM notes n
        JOIN categories c ON c.slug = n.category_slug
+       WHERE n.user_id = $1
        ORDER BY n.created_at DESC
-       LIMIT 300`
+       LIMIT 300`,
+      [userId]
     );
 
     return NextResponse.json({ notes });
@@ -44,6 +50,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const userId = await requireCurrentUserId();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = await request.json();
     const { text, textHtml, imageData } = createNoteSchema.parse(body);
     const safeHtml = textHtml ? sanitizeHtml(textHtml) : "";
@@ -68,10 +77,10 @@ export async function POST(request: Request) {
     const created = [];
     for (const entry of safeEntries) {
       const inserted = await query(
-        `INSERT INTO notes (text, text_html, image_data, category_slug, confidence, tags, source)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO notes (user_id, text, text_html, image_data, category_slug, confidence, tags, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, text, text_html, image_data, category_slug, confidence, tags, source, created_at`,
-        [entry.text, safeHtml, imageData ?? null, entry.categorySlug, entry.confidence, entry.tags, entry.source]
+        [userId, entry.text, safeHtml, imageData ?? null, entry.categorySlug, entry.confidence, entry.tags, entry.source]
       );
       created.push(inserted[0]);
     }
@@ -82,9 +91,9 @@ export async function POST(request: Request) {
       const todos = await extractTodoItems(String(note.text ?? ""));
       for (const todo of todos) {
         await query(
-          `INSERT INTO todos (content, source_note_id)
-           VALUES ($1, $2)`,
-          [todo, note.id]
+          `INSERT INTO todos (user_id, content, source_note_id)
+           VALUES ($1, $2, $3)`,
+          [userId, todo, note.id]
         );
       }
     }
@@ -93,16 +102,18 @@ export async function POST(request: Request) {
       `SELECT n.id, n.text, n.text_html, n.image_data, n.category_slug, n.confidence, n.tags, n.source, n.created_at, c.name AS category_name, c.label AS category_label, c.color AS category_color
        FROM notes n
        JOIN categories c ON c.slug = n.category_slug
-       WHERE n.id = ANY($1::uuid[])
+       WHERE n.id = ANY($1::uuid[]) AND n.user_id = $2
        ORDER BY n.created_at DESC`,
-      [ids]
+      [ids, userId]
     );
 
     const todoItems = await query(
       `SELECT id, content, is_done, source_note_id, created_at
        FROM todos
+       WHERE user_id = $1
        ORDER BY is_done ASC, created_at DESC
-       LIMIT 200`
+       LIMIT 200`,
+      [userId]
     );
 
     return NextResponse.json({ notes, todos: todoItems }, { status: 201 });

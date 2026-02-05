@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { requireCurrentUserId } from "@/lib/current-user";
 import { query } from "@/lib/db";
 
 const updateSchema = z.object({
@@ -15,6 +16,9 @@ type Params = {
 
 export async function PATCH(request: Request, { params }: Params) {
   try {
+    const userId = await requireCurrentUserId();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = await request.json();
     const { categorySlug } = updateSchema.parse(body);
 
@@ -26,9 +30,9 @@ export async function PATCH(request: Request, { params }: Params) {
     const updated = await query(
       `UPDATE notes
        SET category_slug = $1
-       WHERE id = $2
+       WHERE id = $2 AND user_id = $3
        RETURNING id, text, text_html, image_data, category_slug, confidence, tags, source, created_at`,
-      [categorySlug, params.id]
+      [categorySlug, params.id, userId]
     );
 
     if (!updated[0]) {
@@ -39,8 +43,8 @@ export async function PATCH(request: Request, { params }: Params) {
       `SELECT n.id, n.text, n.text_html, n.image_data, n.category_slug, n.confidence, n.tags, n.source, n.created_at, c.name AS category_name, c.label AS category_label, c.color AS category_color
        FROM notes n
        JOIN categories c ON c.slug = n.category_slug
-       WHERE n.id = $1`,
-      [updated[0].id]
+       WHERE n.id = $1 AND n.user_id = $2`,
+      [updated[0].id, userId]
     );
 
     return NextResponse.json({ note: withCategory[0] });

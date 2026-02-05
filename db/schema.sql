@@ -32,6 +32,7 @@ ON CONFLICT (slug) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS notes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   text TEXT NOT NULL,
   category_slug TEXT NOT NULL REFERENCES categories(slug),
   confidence NUMERIC(4, 3) NOT NULL DEFAULT 0.25,
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS category_slug TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS user_id UUID;
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'rules';
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS confidence NUMERIC(4, 3) NOT NULL DEFAULT 0.25;
@@ -71,8 +73,20 @@ BEGIN
   END IF;
 END $$;
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'notes_user_id_fkey'
+  ) THEN
+    ALTER TABLE notes
+      ADD CONSTRAINT notes_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS notes_created_at_idx ON notes (created_at DESC);
 CREATE INDEX IF NOT EXISTS notes_category_slug_idx ON notes (category_slug);
+CREATE INDEX IF NOT EXISTS notes_user_id_idx ON notes (user_id, created_at DESC);
 
 -- Manual migration - 2026-02-04 (rich text + images)
 ALTER TABLE notes ADD COLUMN IF NOT EXISTS text_html TEXT;
@@ -81,10 +95,71 @@ ALTER TABLE notes ADD COLUMN IF NOT EXISTS image_data TEXT;
 -- Manual migration - 2026-02-04 (AI todo list)
 CREATE TABLE IF NOT EXISTS todos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   is_done BOOLEAN NOT NULL DEFAULT FALSE,
   source_note_id UUID REFERENCES notes(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE todos ADD COLUMN IF NOT EXISTS user_id UUID;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'todos_user_id_fkey'
+  ) THEN
+    ALTER TABLE todos
+      ADD CONSTRAINT todos_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS todos_done_idx ON todos (is_done, created_at DESC);
+CREATE INDEX IF NOT EXISTS todos_user_id_done_idx ON todos (user_id, is_done, created_at DESC);
+
+-- Manual migration - 2026-02-04 (auth + user-scoped data)
+-- Run this block separately on existing databases.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT NOT NULL UNIQUE,
+  name TEXT,
+  image_url TEXT,
+  last_provider TEXT,
+  last_sign_in_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE todos ADD COLUMN IF NOT EXISTS user_id UUID;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'notes_user_id_fkey'
+  ) THEN
+    ALTER TABLE notes
+      ADD CONSTRAINT notes_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'todos_user_id_fkey'
+  ) THEN
+    ALTER TABLE todos
+      ADD CONSTRAINT todos_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS notes_user_id_idx ON notes (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS todos_user_id_done_idx ON todos (user_id, is_done, created_at DESC);
+
+-- Optional hardening after backfill:
+-- ALTER TABLE notes ALTER COLUMN user_id SET NOT NULL;
+-- ALTER TABLE todos ALTER COLUMN user_id SET NOT NULL;

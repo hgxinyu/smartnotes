@@ -10,6 +10,7 @@ Current MVP features:
 - Rich text input, image attachments, and created timestamp in note cards
 - AI-generated to-do items extracted from notes (example: "need eggs" -> "Buy eggs")
 - Social auth registration/sign-in with Google and Apple
+- Notes and todos are private per signed-in user
 
 ## Stack
 
@@ -32,7 +33,8 @@ npm install
 cp .env.example .env.local
 ```
 
-3. Create tables in Neon by running `db/schema.sql` (for existing DBs, run only the latest manual migration block at the bottom).
+3. Create tables in Neon by running `db/schema.sql`.
+For existing databases, make sure the latest auth/user-scoping migration is applied (`users` table + `notes.user_id` + `todos.user_id`).
 
 4. Start locally:
 
