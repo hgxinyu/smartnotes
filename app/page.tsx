@@ -17,6 +17,7 @@ export default function HomePage() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [lastCreated, setLastCreated] = useState<{ notes: number; todos: number } | null>(null);
 
   async function loadTodos() {
     const response = await fetch("/api/todos");
@@ -28,6 +29,21 @@ export default function HomePage() {
   useEffect(() => {
     loadTodos().catch((err: Error) => setError(err.message));
   }, []);
+
+  async function toggleTodo(todo: Todo) {
+    const response = await fetch(`/api/todos/${todo.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isDone: !todo.is_done })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data.error ?? "Failed to update todo");
+      return;
+    }
+
+    setTodos((prev) => prev.map((item) => (item.id === todo.id ? { ...item, is_done: data.todo.is_done } : item)));
+  }
 
   async function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -90,6 +106,7 @@ export default function HomePage() {
       setText("");
       clearImage();
       setTodos((data.todos ?? []).slice(0, 8));
+      setLastCreated(data.created ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
@@ -138,6 +155,11 @@ export default function HomePage() {
             )}
             <button disabled={isSaving}>{isSaving ? "Saving..." : "Save Note"}</button>
           </form>
+          {lastCreated && (
+            <p className="muted">
+              Added {lastCreated.notes} note item(s) and {lastCreated.todos} to-do item(s) with AI labels.
+            </p>
+          )}
         </article>
 
         <aside className="homeCard homeAside">
@@ -147,8 +169,28 @@ export default function HomePage() {
           </div>
           <div className="homeTodoList">
             {todos.map((todo) => (
-              <div key={todo.id} className={`homeTodoItem ${todo.is_done ? "done" : ""}`}>
-                <input type="checkbox" checked={todo.is_done} readOnly />
+              <div
+                key={todo.id}
+                className={`homeTodoItem homeTodoItemClickable ${todo.is_done ? "done" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleTodo(todo)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void toggleTodo(todo);
+                  }
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={todo.is_done}
+                  readOnly
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void toggleTodo(todo);
+                  }}
+                />
                 <span>{todo.content}</span>
               </div>
             ))}
@@ -156,7 +198,8 @@ export default function HomePage() {
           </div>
           <div className="homeLinks">
             <Link href="/notes">See all notes</Link>
-            <Link href="/categories">Manage categories</Link>
+            <Link href="/todos">Open full to-do list</Link>
+            <Link href="/labels">Manage labels</Link>
           </div>
         </aside>
       </section>

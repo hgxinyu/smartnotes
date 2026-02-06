@@ -1,85 +1,116 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-
-type Category = {
-  slug: string;
-  name: string;
-  label: string;
-  color: string;
-};
+import Image from "next/image";
+import { useEffect, useState } from "react";
 
 type Note = {
   id: string;
   text: string;
   text_html?: string | null;
-  category_slug: string;
-  category_name: string;
-  category_label: string;
-  category_color: string;
+  image_data?: string | null;
   created_at: string;
+  labels: Label[];
+};
+
+type Label = {
+  id: string;
+  name: string;
+  color: string;
 };
 
 export default function NotesPage() {
   const [notes, setNotes] = useState<Note[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string>("all");
+  const [newLabelByNote, setNewLabelByNote] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([fetch("/api/notes"), fetch("/api/categories")])
-      .then(async ([notesRes, categoriesRes]) => {
-        const notesData = await notesRes.json();
-        const categoriesData = await categoriesRes.json();
-        if (!notesRes.ok) throw new Error(notesData.error ?? "Failed to load notes");
-        if (!categoriesRes.ok) throw new Error(categoriesData.error ?? "Failed to load categories");
-        setNotes(notesData.notes);
-        setCategories(categoriesData.categories);
+    fetch("/api/notes")
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Failed to load notes");
+        setNotes(data.notes);
       })
       .catch((err: Error) => setError(err.message));
   }, []);
 
-  const filteredNotes = useMemo(() => {
-    return activeCategory === "all" ? notes : notes.filter((note) => note.category_slug === activeCategory);
-  }, [notes, activeCategory]);
+  async function addLabel(noteId: string) {
+    const name = (newLabelByNote[noteId] ?? "").trim();
+    if (!name) return;
+
+    const response = await fetch(`/api/notes/${noteId}/labels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data.error ?? "Failed to add label");
+      return;
+    }
+
+    setNotes((prev) => prev.map((note) => (note.id === noteId ? { ...note, labels: data.labels } : note)));
+    setNewLabelByNote((prev) => ({ ...prev, [noteId]: "" }));
+  }
+
+  async function removeLabel(noteId: string, labelId: string) {
+    const response = await fetch(`/api/notes/${noteId}/labels?labelId=${encodeURIComponent(labelId)}`, {
+      method: "DELETE"
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data.error ?? "Failed to remove label");
+      return;
+    }
+
+    setNotes((prev) => prev.map((note) => (note.id === noteId ? { ...note, labels: data.labels } : note)));
+  }
 
   return (
     <main className="page">
       <section className="panel">
         <h1>All Notes</h1>
-        <p>Browse every note by category label and creation timestamp.</p>
-        <div className="filters">
-          <button type="button" className={`pill ${activeCategory === "all" ? "active" : ""}`} onClick={() => setActiveCategory("all")}>
-            All
-          </button>
-          {categories.map((category) => (
-            <button
-              key={category.slug}
-              type="button"
-              className={`pill ${activeCategory === category.slug ? "active" : ""}`}
-              style={{ borderColor: category.color }}
-              onClick={() => setActiveCategory(category.slug)}
-            >
-              {category.label}
-            </button>
-          ))}
-        </div>
-
+        <p>All note records, including image notes.</p>
         <div className="stack">
-          {filteredNotes.map((note) => (
+          {notes.map((note) => (
             <article key={note.id} className="noteCard">
               <div className="meta">
-                <span>{note.category_label}</span>
+                <span>Note</span>
                 <span>{new Date(note.created_at).toLocaleString()}</span>
               </div>
               {note.text_html ? <div className="richPreview" dangerouslySetInnerHTML={{ __html: note.text_html }} /> : <p>{note.text}</p>}
+              {note.image_data && (
+                <Image src={note.image_data} alt="Note attachment" className="noteImage" width={1200} height={800} unoptimized />
+              )}
+              <div className="labelChips">
+                {note.labels?.map((label) => (
+                  <button
+                    key={label.id}
+                    type="button"
+                    className="labelChip"
+                    style={{ borderColor: label.color, color: label.color }}
+                    onClick={() => removeLabel(note.id, label.id)}
+                    title="Remove label"
+                  >
+                    {label.name} x
+                  </button>
+                ))}
+              </div>
+              <div className="labelAddRow">
+                <input
+                  placeholder="Add label"
+                  value={newLabelByNote[note.id] ?? ""}
+                  onChange={(event) => setNewLabelByNote((prev) => ({ ...prev, [note.id]: event.target.value }))}
+                />
+                <button type="button" onClick={() => addLabel(note.id)}>
+                  Add
+                </button>
+              </div>
             </article>
           ))}
-          {filteredNotes.length === 0 && <p className="muted">No notes found.</p>}
+          {notes.length === 0 && <p className="muted">No notes yet.</p>}
         </div>
       </section>
       {error && <p className="error">{error}</p>}
     </main>
   );
 }
-

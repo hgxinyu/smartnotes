@@ -3,14 +3,14 @@
 SmartNotes is a notes app that auto-categorizes daily thoughts into useful lists (for example, grocery, tasks, reminders, ideas).
 
 Current MVP features:
-- Auto-categorize notes with rules + AI fallback
-- Split one input into multiple notes when different intents are detected
-- Create custom categories with labels and colors
-- Manually re-assign notes to another category
-- Rich text input, image attachments, and created timestamp in note cards
-- AI-generated to-do items extracted from notes (example: "need eggs" -> "Buy eggs")
+- Two backend record types: notes and to-dos
+- Auto-route user input into notes vs to-dos
+- Image uploads are saved to notes
+- AI-generated labels for both notes and to-dos
+- Manual label tagging on notes and to-dos
+- Dedicated label management page with label explorer (pick a label and view all linked notes/todos)
 - Social auth registration/sign-in with Google and Apple
-- Notes and todos are private per signed-in user
+- Notes, todos, and labels are private per signed-in user
 
 ## Stack
 
@@ -34,7 +34,7 @@ cp .env.example .env.local
 ```
 
 3. Create tables in Neon by running `db/schema.sql`.
-For existing databases, make sure the latest auth/user-scoping migration is applied (`users` table + `notes.user_id` + `todos.user_id`).
+For existing databases, apply the latest bottom migration blocks (auth/user-scoping and labels).
 
 4. Start locally:
 

@@ -11,6 +11,7 @@ type OAuthProvider = {
 export default function AuthControls() {
   const { data: session, status } = useSession();
   const [providers, setProviders] = useState<OAuthProvider[]>([]);
+  const devBypassEnabled = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
 
   useEffect(() => {
     getProviders().then((result) => {
@@ -38,7 +39,11 @@ export default function AuthControls() {
   }
 
   if (providers.length === 0) {
-    return <span className="authStatus">Set Google/Apple env vars to enable sign-in</span>;
+    return (
+      <span className="authStatus">
+        {devBypassEnabled ? "Local dev auth bypass active" : "Set Google/Apple env vars to enable sign-in"}
+      </span>
+    );
   }
 
   return (

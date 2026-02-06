@@ -6,7 +6,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "SmartNotes",
-  description: "Capture notes quickly and auto-organize them by category."
+  description: "Capture notes and todos quickly with automatic labeling."
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -22,7 +22,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <nav className="nav">
                 <Link href="/">Home</Link>
                 <Link href="/notes">All Notes</Link>
-                <Link href="/categories">Categories</Link>
+                <Link href="/todos">To-Do</Link>
+                <Link href="/labels">Labels</Link>
               </nav>
               <AuthControls />
             </div>

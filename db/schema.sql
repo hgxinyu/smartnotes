@@ -163,3 +163,31 @@ CREATE INDEX IF NOT EXISTS todos_user_id_done_idx ON todos (user_id, is_done, cr
 -- Optional hardening after backfill:
 -- ALTER TABLE notes ALTER COLUMN user_id SET NOT NULL;
 -- ALTER TABLE todos ALTER COLUMN user_id SET NOT NULL;
+
+-- Manual migration - 2026-02-06 (labels for notes and todos)
+CREATE TABLE IF NOT EXISTS labels (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '#0ea5e9',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS labels_user_lower_name_uidx ON labels (user_id, lower(name));
+CREATE INDEX IF NOT EXISTS labels_user_created_idx ON labels (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS note_labels (
+  note_id UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+  PRIMARY KEY (note_id, label_id)
+);
+
+CREATE INDEX IF NOT EXISTS note_labels_label_idx ON note_labels (label_id);
+
+CREATE TABLE IF NOT EXISTS todo_labels (
+  todo_id UUID NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+  PRIMARY KEY (todo_id, label_id)
+);
+
+CREATE INDEX IF NOT EXISTS todo_labels_label_idx ON todo_labels (label_id);

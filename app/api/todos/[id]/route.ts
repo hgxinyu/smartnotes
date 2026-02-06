@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { ensureLabelSchema } from "@/lib/label-store";
 import { requireCurrentUserId } from "@/lib/current-user";
 import { query } from "@/lib/db";
 
@@ -18,6 +19,7 @@ export async function PATCH(request: Request, { params }: Params) {
   try {
     const userId = await requireCurrentUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    await ensureLabelSchema();
 
     const body = await request.json();
     const { isDone } = updateTodoSchema.parse(body);
@@ -25,7 +27,7 @@ export async function PATCH(request: Request, { params }: Params) {
       `UPDATE todos
        SET is_done = $1
        WHERE id = $2 AND user_id = $3
-       RETURNING id, content, is_done, source_note_id, created_at`,
+       RETURNING id`,
       [isDone, params.id, userId]
     );
 
@@ -33,7 +35,24 @@ export async function PATCH(request: Request, { params }: Params) {
       return NextResponse.json({ error: "Todo not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ todo: rows[0] });
+    const withLabels = await query(
+      `SELECT t.id, t.content, t.is_done, t.source_note_id, t.created_at,
+              COALESCE(
+                json_agg(
+                  json_build_object('id', l.id, 'name', l.name, 'color', l.color)
+                  ORDER BY l.name
+                ) FILTER (WHERE l.id IS NOT NULL),
+                '[]'::json
+              ) AS labels
+       FROM todos t
+       LEFT JOIN todo_labels tl ON tl.todo_id = t.id
+       LEFT JOIN labels l ON l.id = tl.label_id
+       WHERE t.id = $1 AND t.user_id = $2
+       GROUP BY t.id`,
+      [rows[0].id, userId]
+    );
+
+    return NextResponse.json({ todo: withLabels[0] });
   } catch (error) {
     return NextResponse.json(
       { error: "Failed to update todo", details: error instanceof Error ? error.message : "Unknown error" },

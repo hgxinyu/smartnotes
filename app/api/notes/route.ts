@@ -1,39 +1,41 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { analyzeAndCategorize } from "@/lib/categorize";
-import { DEFAULT_CATEGORIES } from "@/lib/categories";
+import { ensureLabelSchema, listUserLabels } from "@/lib/label-store";
+import { suggestLabelsForText } from "@/lib/labels";
 import { requireCurrentUserId } from "@/lib/current-user";
 import { query } from "@/lib/db";
-import { extractTodoItems } from "@/lib/todos";
+import { classifyIntake } from "@/lib/intake";
 
 const createNoteSchema = z
   .object({
     text: z.string().max(4000).default(""),
-    textHtml: z.string().max(20000).optional(),
     imageData: z.string().max(3_000_000).optional()
   })
   .refine((value) => value.text.trim().length > 0 || Boolean(value.imageData), {
     message: "Either text or an image is required"
   });
 
-function sanitizeHtml(input: string) {
-  return input
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
-    .replace(/\son\w+="[^"]*"/gi, "")
-    .replace(/\son\w+='[^']*'/gi, "");
-}
-
 export async function GET() {
   try {
     const userId = await requireCurrentUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    await ensureLabelSchema();
 
     const notes = await query(
-      `SELECT n.id, n.text, n.text_html, n.image_data, n.category_slug, n.confidence, n.tags, n.source, n.created_at, c.name AS category_name, c.label AS category_label, c.color AS category_color
+      `SELECT n.id, n.text, n.text_html, n.image_data, n.created_at,
+              COALESCE(
+                json_agg(
+                  json_build_object('id', l.id, 'name', l.name, 'color', l.color)
+                  ORDER BY l.name
+                ) FILTER (WHERE l.id IS NOT NULL),
+                '[]'::json
+              ) AS labels
        FROM notes n
-       JOIN categories c ON c.slug = n.category_slug
+       LEFT JOIN note_labels nl ON nl.note_id = n.id
+       LEFT JOIN labels l ON l.id = nl.label_id
        WHERE n.user_id = $1
+       GROUP BY n.id
        ORDER BY n.created_at DESC
        LIMIT 300`,
       [userId]
@@ -52,71 +54,133 @@ export async function POST(request: Request) {
   try {
     const userId = await requireCurrentUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    await ensureLabelSchema();
 
     const body = await request.json();
-    const { text, textHtml, imageData } = createNoteSchema.parse(body);
-    const safeHtml = textHtml ? sanitizeHtml(textHtml) : "";
+    const { text, imageData } = createNoteSchema.parse(body);
     const normalizedText = text.trim();
+    const intake = await classifyIntake(normalizedText);
+    const noteEntries = [...intake.notes];
+    const todoEntries = [...intake.todos];
+    const existingLabels = await listUserLabels(userId);
+    const existingLabelNames = existingLabels.map((label) => label.name);
+    const existingLabelByName = new Map(existingLabels.map((label) => [label.name.toLowerCase(), label.id]));
 
-    for (const category of DEFAULT_CATEGORIES) {
-      await query(
-        `INSERT INTO categories (slug, name, label, color)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (slug) DO NOTHING`,
-        [category.slug, category.name, category.label, category.color]
-      );
+    await query(
+      `INSERT INTO categories (slug, name, label, color)
+       VALUES ('uncategorized', 'Uncategorized', 'General', '#475569')
+       ON CONFLICT (slug) DO NOTHING`
+    );
+
+    // Images are always stored as notes. Attach to first note; create one if needed.
+    if (imageData) {
+      if (noteEntries.length === 0) {
+        noteEntries.push(normalizedText || "Image note");
+      }
     }
 
-    const categories = await query<{ slug: string; name: string; label: string; color: string }>(
-      "SELECT slug, name, label, color FROM categories"
-    );
-    const analyzed = normalizedText ? await analyzeAndCategorize(normalizedText, categories) : [];
-    const entries = analyzed.filter((entry) => entry.text.trim().length > 0);
-    const safeEntries = entries.length > 0 ? entries : [{ text: normalizedText || "Image note", categorySlug: "uncategorized", confidence: 0.2, tags: [], source: "rules" as const }];
-
     const created = [];
-    for (const entry of safeEntries) {
+    for (let index = 0; index < noteEntries.length; index += 1) {
+      const entry = noteEntries[index];
       const inserted = await query(
         `INSERT INTO notes (user_id, text, text_html, image_data, category_slug, confidence, tags, source)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, text, text_html, image_data, category_slug, confidence, tags, source, created_at`,
-        [userId, entry.text, safeHtml, imageData ?? null, entry.categorySlug, entry.confidence, entry.tags, entry.source]
+         VALUES ($1, $2, $3, $4, 'uncategorized', 1.0, '{}', 'rules')
+         RETURNING id, text, text_html, image_data, created_at`,
+        [userId, entry, null, index === 0 ? imageData ?? null : null]
       );
       created.push(inserted[0]);
     }
 
-    const ids = created.map((item) => item.id);
-
     for (const note of created) {
-      const todos = await extractTodoItems(String(note.text ?? ""));
-      for (const todo of todos) {
+      const suggestedLabels = await suggestLabelsForText(String(note.text ?? ""), existingLabelNames);
+      for (const labelName of suggestedLabels) {
+        const labelId = existingLabelByName.get(labelName.toLowerCase());
+        if (!labelId) continue;
         await query(
-          `INSERT INTO todos (user_id, content, source_note_id)
-           VALUES ($1, $2, $3)`,
-          [userId, todo, note.id]
+          `INSERT INTO note_labels (note_id, label_id)
+           VALUES ($1, $2)
+           ON CONFLICT (note_id, label_id) DO NOTHING`,
+          [note.id, labelId]
         );
       }
     }
 
-    const notes = await query(
-      `SELECT n.id, n.text, n.text_html, n.image_data, n.category_slug, n.confidence, n.tags, n.source, n.created_at, c.name AS category_name, c.label AS category_label, c.color AS category_color
+    for (const todo of todoEntries) {
+      const insertedTodo = await query<{ id: string; content: string }>(
+        `INSERT INTO todos (user_id, content, source_note_id)
+         VALUES ($1, $2, NULL)
+         RETURNING id, content`,
+        [userId, todo]
+      );
+
+      const todoId = insertedTodo[0]?.id;
+      if (!todoId) continue;
+
+      const suggestedLabels = await suggestLabelsForText(todo, existingLabelNames);
+      for (const labelName of suggestedLabels) {
+        const labelId = existingLabelByName.get(labelName.toLowerCase());
+        if (!labelId) continue;
+        await query(
+          `INSERT INTO todo_labels (todo_id, label_id)
+           VALUES ($1, $2)
+           ON CONFLICT (todo_id, label_id) DO NOTHING`,
+          [todoId, labelId]
+        );
+      }
+    }
+
+    const ids = created.map((item) => item.id);
+    const notes =
+      ids.length === 0
+        ? []
+        : await query(
+            `SELECT n.id, n.text, n.text_html, n.image_data, n.created_at,
+                    COALESCE(
+                      json_agg(
+                        json_build_object('id', l.id, 'name', l.name, 'color', l.color)
+                        ORDER BY l.name
+                      ) FILTER (WHERE l.id IS NOT NULL),
+                      '[]'::json
+                    ) AS labels
        FROM notes n
-       JOIN categories c ON c.slug = n.category_slug
+       LEFT JOIN note_labels nl ON nl.note_id = n.id
+       LEFT JOIN labels l ON l.id = nl.label_id
        WHERE n.id = ANY($1::uuid[]) AND n.user_id = $2
+       GROUP BY n.id
        ORDER BY n.created_at DESC`,
-      [ids, userId]
-    );
+            [ids, userId]
+          );
 
     const todoItems = await query(
-      `SELECT id, content, is_done, source_note_id, created_at
-       FROM todos
-       WHERE user_id = $1
-       ORDER BY is_done ASC, created_at DESC
-       LIMIT 200`,
+      `SELECT t.id, t.content, t.is_done, t.source_note_id, t.created_at,
+              COALESCE(
+                json_agg(
+                  json_build_object('id', l.id, 'name', l.name, 'color', l.color)
+                  ORDER BY l.name
+                ) FILTER (WHERE l.id IS NOT NULL),
+                '[]'::json
+              ) AS labels
+       FROM todos t
+       LEFT JOIN todo_labels tl ON tl.todo_id = t.id
+       LEFT JOIN labels l ON l.id = tl.label_id
+       WHERE t.user_id = $1
+       GROUP BY t.id
+       ORDER BY t.is_done ASC, t.created_at DESC
+      LIMIT 200`,
       [userId]
     );
 
-    return NextResponse.json({ notes, todos: todoItems }, { status: 201 });
+    return NextResponse.json(
+      {
+        notes,
+        todos: todoItems,
+        created: {
+          notes: notes.length,
+          todos: todoEntries.length
+        }
+      },
+      { status: 201 }
+    );
   } catch (error) {
     return NextResponse.json(
       { error: "Failed to create note", details: error instanceof Error ? error.message : "Unknown error" },
